@@ -1,7 +1,7 @@
 name: liburan_seru
 description: "Liburan Seru — Jastip & Travel seluruh dunia, offline-first."
 publish_to: 'none'
-version: 1.0.0+3
+version: 1.0.0+4
 
 environment:
   sdk: ^3.14.0
