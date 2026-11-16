@@ -61,6 +61,30 @@ class JastipItem {
       );
 }
 
+const List<String> itinStatuses = ['Wishlist', 'Planned', 'Done'];
+
+String formatDate(DateTime? d) =>
+    d == null ? 'Pilih tanggal' : '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+class ItinActivity {
+  ItinActivity({required this.id, required this.name, required this.location, required this.date, required this.cost, required this.status});
+  final String id;
+  final String name;
+  final String location;
+  final String date; // yyyy-MM-dd atau ''
+  final double cost;
+  final String status;
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'location': location, 'date': date, 'cost': cost, 'status': status};
+  factory ItinActivity.fromJson(Map<String, dynamic> j) => ItinActivity(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        location: j['location'] as String? ?? '',
+        date: j['date'] as String? ?? '',
+        cost: (j['cost'] as num? ?? 0).toDouble(),
+        status: j['status'] as String? ?? 'Wishlist',
+      );
+}
+
 class LiburanSeruApp extends StatelessWidget {
   const LiburanSeruApp({super.key});
   @override
@@ -91,6 +115,10 @@ class _HomePageState extends State<HomePage> {
   List<JastipItem> _items = [];
   Map<String, double> _rates = Map.of(defaultRates);
   String _jastipCurrency = 'JPY';
+  List<ItinActivity> _itinActivities = [];
+  String _itinRoute = '';
+  DateTime? _itinDepart;
+  DateTime? _itinReturn;
   bool _loaded = false;
 
   @override
@@ -103,6 +131,7 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
     final itemsRaw = prefs.getString('ls_jastip_items');
     final ratesRaw = prefs.getString('ls_rates');
+    final itinRaw = prefs.getString('ls_itinerary');
     setState(() {
       if (itemsRaw != null) {
         try {
@@ -116,6 +145,18 @@ class _HomePageState extends State<HomePage> {
           for (final e in m.entries) {
             _rates[e.key] = (e.value as num).toDouble();
           }
+        } catch (_) {}
+      }
+      if (itinRaw != null) {
+        try {
+          final m = jsonDecode(itinRaw) as Map<String, dynamic>;
+          _itinRoute = m['route'] as String? ?? '';
+          final dep = m['depart'] as String?;
+          final ret = m['return'] as String?;
+          _itinDepart = dep == null || dep.isEmpty ? null : DateTime.tryParse(dep);
+          _itinReturn = ret == null || ret.isEmpty ? null : DateTime.tryParse(ret);
+          final list = m['activities'] as List? ?? [];
+          _itinActivities = list.map((e) => ItinActivity.fromJson(e as Map<String, dynamic>)).toList();
         } catch (_) {}
       }
       _loaded = true;
@@ -153,11 +194,72 @@ class _HomePageState extends State<HomePage> {
     _saveItems();
   }
 
-  void _goToJastip(String currency) {
+  Future<void> _saveItinerary() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('ls_itinerary', jsonEncode({
+      'route': _itinRoute,
+      'depart': _itinDepart?.toIso8601String() ?? '',
+      'return': _itinReturn?.toIso8601String() ?? '',
+      'activities': _itinActivities.map((e) => e.toJson()).toList(),
+    }));
+  }
+
+  void _updateItinPlan(String route, DateTime? depart, DateTime? ret) {
     setState(() {
-      _jastipCurrency = currency;
-      _tab = 0;
+      _itinRoute = route;
+      _itinDepart = depart;
+      _itinReturn = ret;
     });
+    _saveItinerary();
+  }
+
+  void _addItinActivity(ItinActivity a) {
+    setState(() => _itinActivities.insert(0, a));
+    _saveItinerary();
+  }
+
+  void _deleteItinActivity(String id) {
+    setState(() => _itinActivities.removeWhere((e) => e.id == id));
+    _saveItinerary();
+  }
+
+  void _cycleItinStatus(String id) {
+    setState(() {
+      final i = _itinActivities.indexWhere((e) => e.id == id);
+      if (i < 0) return;
+      final old = _itinActivities[i];
+      final next = itinStatuses[(itinStatuses.indexOf(old.status) + 1) % itinStatuses.length];
+      _itinActivities[i] = ItinActivity(id: old.id, name: old.name, location: old.location, date: old.date, cost: old.cost, status: next);
+    });
+    _saveItinerary();
+  }
+
+  void _addDestinationToItinerary(String city) {
+    setState(() {
+      _itinRoute = _itinRoute.isEmpty ? city : (_itinRoute.contains(city) ? _itinRoute : '$_itinRoute -> $city');
+      _tab = 2;
+    });
+    _saveItinerary();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$city ditambahkan ke rute perjalanan.')));
+  }
+
+  void _openJastipPage() {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(
+      appBar: AppBar(title: const Text('Jastip'), backgroundColor: const Color(0xFF0E7C7B), foregroundColor: Colors.white),
+      body: JastipScreen(items: _items, rates: _rates, currency: _jastipCurrency, onCurrencyChanged: (c) => setState(() => _jastipCurrency = c), onAdd: _addItem, onDelete: _deleteItem, onCycleStatus: _cycleStatus),
+    )));
+  }
+
+  void _openKursPage() {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => Scaffold(
+      appBar: AppBar(title: const Text('Kurs'), backgroundColor: const Color(0xFF0E7C7B), foregroundColor: Colors.white),
+      body: KursScreen(rates: _rates, onRatesChanged: _updateRates),
+    )));
+  }
+
+  void _goToJastip(String currency) {
+    setState(() => _jastipCurrency = currency);
+    _openJastipPage();
   }
 
   void _updateRates(Map<String, double> rates) {
@@ -176,26 +278,32 @@ class _HomePageState extends State<HomePage> {
       body: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : switch (_tab) {
-              0 => JastipScreen(
+              0 => PesananScreen(
                   items: _items,
                   rates: _rates,
-                  currency: _jastipCurrency,
-                  onCurrencyChanged: (c) => setState(() => _jastipCurrency = c),
-                  onAdd: _addItem,
-                  onDelete: _deleteItem,
-                  onCycleStatus: _cycleStatus,
+                  onOpenJastip: _openJastipPage,
+                  onOpenKurs: _openKursPage,
                 ),
-              1 => TravelScreen(onJastipFrom: _goToJastip),
-              _ => KursScreen(rates: _rates, onRatesChanged: _updateRates),
+              1 => TravelScreen(onJastipFrom: _goToJastip, onAddToItinerary: _addDestinationToItinerary),
+              _ => ItineraryScreen(
+                  route: _itinRoute,
+                  depart: _itinDepart,
+                  ret: _itinReturn,
+                  activities: _itinActivities,
+                  onPlanChanged: _updateItinPlan,
+                  onAdd: _addItinActivity,
+                  onDelete: _deleteItinActivity,
+                  onCycleStatus: _cycleItinStatus,
+                ),
             },
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tab,
         onTap: (i) => setState(() => _tab = i),
         selectedItemColor: const Color(0xFF0E7C7B),
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.shopping_bag), label: 'Jastip'),
+          BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: 'Pesanan'),
           BottomNavigationBarItem(icon: Icon(Icons.flight), label: 'Travel'),
-          BottomNavigationBarItem(icon: Icon(Icons.currency_exchange), label: 'Kurs'),
+          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Itinerary'),
         ],
       ),
     );
@@ -362,8 +470,9 @@ class _JastipScreenState extends State<JastipScreen> {
 }
 
 class TravelScreen extends StatefulWidget {
-  const TravelScreen({super.key, required this.onJastipFrom});
+  const TravelScreen({super.key, required this.onJastipFrom, required this.onAddToItinerary});
   final ValueChanged<String> onJastipFrom;
+  final ValueChanged<String> onAddToItinerary;
   @override
   State<TravelScreen> createState() => _TravelScreenState();
 }
@@ -413,7 +522,7 @@ class _TravelScreenState extends State<TravelScreen> {
                   isThreeLine: true,
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
-                    await Navigator.push(context, MaterialPageRoute(builder: (_) => DestinationDetail(dest: d, onJastipFrom: widget.onJastipFrom)));
+                    await Navigator.push(context, MaterialPageRoute(builder: (_) => DestinationDetail(dest: d, onJastipFrom: widget.onJastipFrom, onAddToItinerary: widget.onAddToItinerary)));
                   },
                 ),
               );
@@ -426,9 +535,10 @@ class _TravelScreenState extends State<TravelScreen> {
 }
 
 class DestinationDetail extends StatelessWidget {
-  const DestinationDetail({super.key, required this.dest, required this.onJastipFrom});
+  const DestinationDetail({super.key, required this.dest, required this.onJastipFrom, required this.onAddToItinerary});
   final Destination dest;
   final ValueChanged<String> onJastipFrom;
+  final ValueChanged<String> onAddToItinerary;
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -470,9 +580,265 @@ class DestinationDetail extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                onAddToItinerary(dest.name);
+              },
+              icon: const Icon(Icons.map),
+              label: Text('Masukkan ${dest.name} ke Rencana Perjalanan'),
+            ),
+          ),
+          const SizedBox(height: 8),
           const Text('Harga pass & itinerary adalah perkiraan. Cek harga terbaru sebelum berangkat.', style: TextStyle(color: Colors.grey, fontSize: 12)),
         ],
       ),
+    );
+  }
+}
+
+// ---------------- PESANAN ----------------
+
+class PesananScreen extends StatelessWidget {
+  const PesananScreen({super.key, required this.items, required this.rates, required this.onOpenJastip, required this.onOpenKurs});
+  final List<JastipItem> items;
+  final Map<String, double> rates;
+  final VoidCallback onOpenJastip;
+  final VoidCallback onOpenKurs;
+  @override
+  Widget build(BuildContext context) {
+    final total = items.fold<double>(0, (a, e) => a + e.idr(rates));
+    final lunas = items.where((e) => e.status == 'Lunas').length;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Center(child: Image.asset('assets/logo_full.png', height: 110, fit: BoxFit.contain)),
+        const SizedBox(height: 16),
+        const Text('Pesanan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('Pilih salah satu untuk dibuka.', style: TextStyle(color: Colors.grey)),
+        const SizedBox(height: 12),
+        Card(
+          child: InkWell(
+            onTap: onOpenJastip,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const CircleAvatar(backgroundColor: Color(0xFF0E7C7B), foregroundColor: Colors.white, child: Icon(Icons.shopping_bag)),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Jastip', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text('${items.length} titipan • $lunas lunas\nTotal ${formatIDR(total)}'),
+                  ])),
+                  const Icon(Icons.chevron_right),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: InkWell(
+            onTap: onOpenKurs,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const CircleAvatar(backgroundColor: Color(0xFFF58A1F), foregroundColor: Colors.white, child: Icon(Icons.currency_exchange)),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Kurs', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text('1 USD = ${formatIDR(rates['USD'] ?? 1)} • 1 JPY = ${formatIDR(rates['JPY'] ?? 1)}\nKetuk untuk ubah kurs'),
+                  ])),
+                  const Icon(Icons.chevron_right),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------- ITINERARY ----------------
+
+class ItineraryScreen extends StatefulWidget {
+  const ItineraryScreen({super.key, required this.route, required this.depart, required this.ret, required this.activities, required this.onPlanChanged, required this.onAdd, required this.onDelete, required this.onCycleStatus});
+  final String route;
+  final DateTime? depart;
+  final DateTime? ret;
+  final List<ItinActivity> activities;
+  final void Function(String route, DateTime? depart, DateTime? ret) onPlanChanged;
+  final ValueChanged<ItinActivity> onAdd;
+  final ValueChanged<String> onDelete;
+  final ValueChanged<String> onCycleStatus;
+  @override
+  State<ItineraryScreen> createState() => _ItineraryScreenState();
+}
+
+class _ItineraryScreenState extends State<ItineraryScreen> {
+  late final TextEditingController _route = TextEditingController(text: widget.route);
+  final _name = TextEditingController();
+  final _location = TextEditingController();
+  final _cost = TextEditingController();
+  DateTime? _date;
+  String _status = 'Wishlist';
+
+  @override
+  void didUpdateWidget(ItineraryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.route != oldWidget.route && widget.route != _route.text) {
+      _route.text = widget.route;
+    }
+  }
+
+  @override
+  void dispose() {
+    _route.dispose();
+    _name.dispose();
+    _location.dispose();
+    _cost.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate(bool isDepart) async {
+    final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: DateTime(2026), lastDate: DateTime(2028));
+    if (picked == null) return;
+    widget.onPlanChanged(_route.text.trim(), isDepart ? picked : widget.depart, isDepart ? widget.ret : picked);
+  }
+
+  void _submit() {
+    final name = _name.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Isi nama aktivitas dulu.')));
+      return;
+    }
+    final cost = double.tryParse(_cost.text.trim().replaceAll(',', '.')) ?? 0;
+    widget.onAdd(ItinActivity(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      location: _location.text.trim(),
+      date: _date == null ? '' : '${_date!.year}-${_date!.month.toString().padLeft(2, '0')}-${_date!.day.toString().padLeft(2, '0')}',
+      cost: cost,
+      status: _status,
+    ));
+    _name.clear();
+    _location.clear();
+    _cost.clear();
+    setState(() => _date = null);
+  }
+
+  Color _statusColor(String s) => switch (s) {
+        'Done' => Colors.green,
+        'Planned' => Colors.blue,
+        _ => Colors.orange,
+      };
+
+  Widget _column(String title, IconData icon, List<ItinActivity> list) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        Row(children: [Icon(icon, color: const Color(0xFF0E7C7B)), const SizedBox(width: 6), Text('$title (${list.length})', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold))]),
+        const SizedBox(height: 8),
+        if (list.isEmpty) const Text('Belum ada — tambahkan aktivitas di atas.', style: TextStyle(color: Colors.grey)),
+        ...list.map((a) => Card(
+              child: ListTile(
+                title: Text(a.name),
+                subtitle: Text('${a.location.isEmpty ? '-' : a.location}${a.date.isEmpty ? '' : ' • ${a.date}'}\n${formatIDR(a.cost)}'),
+                isThreeLine: true,
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  InkWell(
+                    onTap: () => widget.onCycleStatus(a.id),
+                    child: Chip(label: Text(a.status, style: const TextStyle(color: Colors.white, fontSize: 12)), backgroundColor: _statusColor(a.status)),
+                  ),
+                  IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => widget.onDelete(a.id)),
+                ]),
+              ),
+            )),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = widget.activities.fold<double>(0, (a, e) => a + e.cost);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('Advanced Itinerary Planner', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const Text('Rancang perjalanan multi-kota, atur jadwal, kelola anggaran.', style: TextStyle(color: Colors.grey)),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _route,
+          decoration: const InputDecoration(labelText: 'Tujuan Multi-Kota', hintText: 'Cth: Nagoya -> Shirakawa -> Kyoto', border: OutlineInputBorder()),
+          onChanged: (v) => widget.onPlanChanged(v, widget.depart, widget.ret),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: OutlinedButton.icon(onPressed: () => _pickDate(true), icon: const Icon(Icons.calendar_today, size: 18), label: Text('Pergi: ${formatDate(widget.depart)}'))),
+            const SizedBox(width: 8),
+            Expanded(child: OutlinedButton.icon(onPressed: () => _pickDate(false), icon: const Icon(Icons.calendar_today, size: 18), label: Text('Sampai: ${formatDate(widget.ret)}'))),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: () {
+              widget.onPlanChanged(_route.text.trim(), widget.depart, widget.ret);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rencana disimpan di HP.')));
+            },
+            icon: const Icon(Icons.save),
+            label: const Text('Simpan Rencana'),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text('Tambah Aktivitas', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Aktivitas (Cth: Bermain Salju)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: _location, decoration: const InputDecoration(labelText: 'Lokasi (Cth: Shirakawa)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: OutlinedButton.icon(onPressed: () async {
+              final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: DateTime(2026), lastDate: DateTime(2028));
+              if (picked != null) setState(() => _date = picked);
+            }, icon: const Icon(Icons.calendar_today, size: 18), label: Text(formatDate(_date)))),
+            const SizedBox(width: 8),
+            Expanded(child: TextField(controller: _cost, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Biaya (IDR)', border: OutlineInputBorder()))),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: DropdownButtonFormField<String>(initialValue: _status, decoration: const InputDecoration(labelText: 'Status', border: OutlineInputBorder()), items: itinStatuses.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(), onChanged: (v) { if (v != null) setState(() => _status = v); })),
+            const SizedBox(width: 8),
+            Expanded(child: FilledButton.icon(onPressed: _submit, icon: const Icon(Icons.add), label: const Text('+ Tambah'))),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Card(
+          color: const Color(0xFFFFF3E0),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text('Estimasi Total Pengeluaran:', style: TextStyle(fontWeight: FontWeight.bold)),
+              Text(formatIDR(total), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 18)),
+            ]),
+          ),
+        ),
+        _column('Wishlist', Icons.star, widget.activities.where((e) => e.status == 'Wishlist').toList()),
+        _column('Planned (To Do)', Icons.event_note, widget.activities.where((e) => e.status == 'Planned').toList()),
+        _column('Done', Icons.check_circle, widget.activities.where((e) => e.status == 'Done').toList()),
+        const SizedBox(height: 8),
+        const Text('Ketuk chip status untuk pindah kolom: Wishlist → Planned → Done. Semua tersimpan offline di HP.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+      ],
     );
   }
 }
