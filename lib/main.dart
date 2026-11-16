@@ -260,6 +260,10 @@ class _JastipScreenState extends State<JastipScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Center(
+          child: Image.asset('assets/logo_full.png', height: 110, fit: BoxFit.contain),
+        ),
+        const SizedBox(height: 8),
         Card(
           color: const Color(0xFF0E7C7B),
           child: Padding(
